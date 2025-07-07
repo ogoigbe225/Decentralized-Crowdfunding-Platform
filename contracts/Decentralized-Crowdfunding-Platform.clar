@@ -11,6 +11,10 @@
 (define-constant ERR_NO_FUNDS_TO_WITHDRAW (err u109))
 (define-constant ERR_REFUND_NOT_AVAILABLE (err u110))
 
+(define-constant ERR_REPUTATION_UPDATE_FAILED (err u111))
+(define-constant ERR_INVALID_RATING (err u112))
+(define-constant ERR_ALREADY_RATED (err u113))
+
 (define-data-var project-counter uint u0)
 (define-data-var milestone-counter uint u0)
 
@@ -241,4 +245,102 @@
 
 (define-read-only (has-voted-milestone (milestone-id uint) (voter principal))
   (default-to false (map-get? milestone-votes { milestone-id: milestone-id, voter: voter }))
+)
+
+(define-map creator-reputation
+  principal
+  {
+    total-projects: uint,
+    successful-projects: uint,
+    total-funding-raised: uint,
+    milestones-completed: uint,
+    total-milestones: uint,
+    reputation-score: uint
+  }
+)
+
+(define-map project-ratings
+  { project-id: uint, rater: principal }
+  { rating: uint, has-rated: bool }
+)
+
+(define-map project-rating-summary
+  uint
+  { total-ratings: uint, rating-sum: uint, average-rating: uint }
+)
+
+(define-public (rate-project (project-id uint) (rating uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (user-funded (default-to u0 (map-get? user-total-funded { project-id: project-id, user: tx-sender })))
+      (already-rated (default-to false (get has-rated (map-get? project-ratings { project-id: project-id, rater: tx-sender }))))
+      (current-summary (default-to { total-ratings: u0, rating-sum: u0, average-rating: u0 } 
+                        (map-get? project-rating-summary project-id)))
+    )
+    (asserts! (> user-funded u0) ERR_NOT_AUTHORIZED)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR_INVALID_RATING)
+    (asserts! (not already-rated) ERR_ALREADY_RATED)
+    (asserts! (not (get is-active project)) ERR_PROJECT_NOT_ENDED)
+    (map-set project-ratings
+      { project-id: project-id, rater: tx-sender }
+      { rating: rating, has-rated: true }
+    )
+    (let
+      (
+        (new-total (+ (get total-ratings current-summary) u1))
+        (new-sum (+ (get rating-sum current-summary) rating))
+        (new-average (/ new-sum new-total))
+      )
+      (map-set project-rating-summary project-id
+        { total-ratings: new-total, rating-sum: new-sum, average-rating: new-average }
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (update-creator-reputation (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (creator (get creator project))
+      (current-rep (default-to 
+        { total-projects: u0, successful-projects: u0, total-funding-raised: u0, 
+          milestones-completed: u0, total-milestones: u0, reputation-score: u0 }
+        (map-get? creator-reputation creator)))
+      (project-successful (>= (get current-funding project) (get funding-goal project)))
+    )
+    (asserts! (not (get is-active project)) ERR_PROJECT_NOT_ENDED)
+    (let
+      (
+        (new-total-projects (+ (get total-projects current-rep) u1))
+        (new-successful (if project-successful 
+                          (+ (get successful-projects current-rep) u1) 
+                          (get successful-projects current-rep)))
+        (new-total-funding (+ (get total-funding-raised current-rep) (get current-funding project)))
+        (success-rate (if (> new-total-projects u0) (/ (* new-successful u100) new-total-projects) u0))
+        (new-score (+ success-rate (/ new-total-funding u1000000)))
+      )
+      (map-set creator-reputation creator
+        {
+          total-projects: new-total-projects,
+          successful-projects: new-successful,
+          total-funding-raised: new-total-funding,
+          milestones-completed: (get milestones-completed current-rep),
+          total-milestones: (get total-milestones current-rep),
+          reputation-score: new-score
+        }
+      )
+      (ok new-score)
+    )
+  )
+)
+
+(define-read-only (get-creator-reputation (creator principal))
+  (map-get? creator-reputation creator)
+)
+
+(define-read-only (get-project-rating (project-id uint))
+  (map-get? project-rating-summary project-id)
 )
