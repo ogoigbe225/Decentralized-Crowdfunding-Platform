@@ -11,6 +11,20 @@
 (define-constant ERR_NO_FUNDS_TO_WITHDRAW (err u109))
 (define-constant ERR_REFUND_NOT_AVAILABLE (err u110))
 
+(define-constant CATEGORY_TECH u1)
+(define-constant CATEGORY_ART u2)
+(define-constant CATEGORY_GAMES u3)
+(define-constant CATEGORY_FILM u4)
+(define-constant CATEGORY_MUSIC u5)
+(define-constant CATEGORY_PUBLISHING u6)
+(define-constant CATEGORY_FOOD u7)
+(define-constant CATEGORY_FASHION u8)
+(define-constant CATEGORY_OTHER u9)
+
+(define-constant ERR_INVALID_CATEGORY (err u200))
+
+(define-data-var featured-project-id uint u0)
+
 (define-constant ERR_REPUTATION_UPDATE_FAILED (err u111))
 (define-constant ERR_INVALID_RATING (err u112))
 (define-constant ERR_ALREADY_RATED (err u113))
@@ -343,4 +357,91 @@
 
 (define-read-only (get-project-rating (project-id uint))
   (map-get? project-rating-summary project-id)
+)
+
+
+(define-map project-categories
+  uint
+  { category: uint, tags: (list 3 (string-ascii 20)), is-featured: bool }
+)
+
+(define-map category-stats
+  uint
+  { total-projects: uint, total-funding: uint, successful-projects: uint }
+)
+
+(define-map category-projects
+  { category: uint, index: uint }
+  uint
+)
+
+(define-map category-counters
+  uint
+  uint
+)
+
+(define-public (set-project-category (project-id uint) (category uint) (tags (list 3 (string-ascii 20))))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (category-count (default-to u0 (map-get? category-counters category)))
+    )
+    (asserts! (is-eq tx-sender (get creator project)) ERR_NOT_AUTHORIZED)
+    (asserts! (and (>= category u1) (<= category u9)) ERR_INVALID_CATEGORY)
+    (map-set project-categories project-id
+      { category: category, tags: tags, is-featured: false }
+    )
+    (map-set category-projects
+      { category: category, index: category-count }
+      project-id
+    )
+    (map-set category-counters category (+ category-count u1))
+    (map-set category-stats category
+      (merge (default-to { total-projects: u0, total-funding: u0, successful-projects: u0 }
+                          (map-get? category-stats category))
+             { total-projects: (+ (default-to u0 (get total-projects (map-get? category-stats category))) u1) })
+    )
+    (ok true)
+  )
+)
+
+(define-public (feature-project (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (category-data (unwrap! (map-get? project-categories project-id) ERR_PROJECT_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (var-set featured-project-id project-id)
+    (map-set project-categories project-id
+      (merge category-data { is-featured: true })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-projects-by-category (category uint) (limit uint))
+  (list
+    (map-get? category-projects { category: category, index: u0 })
+    (map-get? category-projects { category: category, index: u1 })
+    (map-get? category-projects { category: category, index: u2 })
+    (map-get? category-projects { category: category, index: u3 })
+    (map-get? category-projects { category: category, index: u4 })
+  )
+)
+
+(define-read-only (get-category-project-at-index (params { category: uint, index: uint }))
+  (map-get? category-projects params)
+)
+
+(define-read-only (get-project-category (project-id uint))
+  (map-get? project-categories project-id)
+)
+
+(define-read-only (get-category-stats (category uint))
+  (map-get? category-stats category)
+)
+
+(define-read-only (get-featured-project)
+  (var-get featured-project-id)
 )
