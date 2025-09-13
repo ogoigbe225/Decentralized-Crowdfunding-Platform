@@ -21,6 +21,16 @@
 (define-constant CATEGORY_FASHION u8)
 (define-constant CATEGORY_OTHER u9)
 
+(define-constant ERR_UPDATE_NOT_FOUND (err u301))
+(define-constant ERR_INVALID_UPDATE_TYPE (err u302))
+
+(define-constant UPDATE_TYPE_PROGRESS u1)
+(define-constant UPDATE_TYPE_NEWS u2)  
+(define-constant UPDATE_TYPE_DELAY u3)
+(define-constant UPDATE_TYPE_COMPLETION u4)
+
+(define-data-var update-counter uint u0)
+
 (define-constant ERR_INVALID_CATEGORY (err u200))
 
 (define-data-var featured-project-id uint u0)
@@ -444,4 +454,98 @@
 
 (define-read-only (get-featured-project)
   (var-get featured-project-id)
+)
+
+
+(define-map project-updates
+  uint
+  {
+    project-id: uint,
+    creator: principal,
+    title: (string-ascii 80),
+    content: (string-ascii 300),
+    update-type: uint,
+    timestamp: uint,
+    block-height: uint
+  }
+)
+
+(define-map project-update-indices
+  { project-id: uint, index: uint }
+  uint
+)
+
+(define-map project-update-counts
+  uint
+  uint
+)
+
+(define-public (post-project-update 
+  (project-id uint) 
+  (title (string-ascii 80)) 
+  (content (string-ascii 300)) 
+  (update-type uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (update-id (+ (var-get update-counter) u1))
+      (current-count (default-to u0 (map-get? project-update-counts project-id)))
+    )
+    (asserts! (is-eq tx-sender (get creator project)) ERR_NOT_AUTHORIZED)
+    (asserts! (and (>= update-type u1) (<= update-type u4)) ERR_INVALID_UPDATE_TYPE)
+    (map-set project-updates update-id
+      {
+        project-id: project-id,
+        creator: tx-sender,
+        title: title,
+        content: content,
+        update-type: update-type,
+        timestamp: stacks-block-height,
+        block-height: stacks-block-height
+      }
+    )
+    (map-set project-update-indices
+      { project-id: project-id, index: current-count }
+      update-id
+    )
+    (map-set project-update-counts project-id (+ current-count u1))
+    (var-set update-counter update-id)
+    (ok update-id)
+  )
+)
+
+(define-read-only (get-project-update (update-id uint))
+  (map-get? project-updates update-id)
+)
+
+(define-read-only (get-project-updates (project-id uint) (start-index uint) (count uint))
+  (let
+    (
+      (total-updates (default-to u0 (map-get? project-update-counts project-id)))
+      (end-index (if (> (+ start-index count) total-updates) total-updates (+ start-index count)))
+    )
+    (map get-update-at-index 
+      (list 
+        { project-id: project-id, index: start-index }
+        { project-id: project-id, index: (+ start-index u1) }
+        { project-id: project-id, index: (+ start-index u2) }
+      )
+    )
+  )
+)
+
+(define-read-only (get-update-at-index (params { project-id: uint, index: uint }))
+  (let
+    (
+      (update-id (map-get? project-update-indices params))
+    )
+    (match update-id
+      id (map-get? project-updates id)
+      none
+    )
+  )
+)
+
+(define-read-only (get-project-update-count (project-id uint))
+  (default-to u0 (map-get? project-update-counts project-id))
 )
