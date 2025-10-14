@@ -29,6 +29,13 @@
 (define-constant UPDATE_TYPE_DELAY u3)
 (define-constant UPDATE_TYPE_COMPLETION u4)
 
+(define-constant ERR_REWARD_NOT_FOUND (err u400))
+(define-constant ERR_REWARD_ALREADY_CLAIMED (err u401))
+(define-constant ERR_INSUFFICIENT_FUNDING_FOR_REWARD (err u402))
+(define-constant ERR_REWARD_LIMIT_REACHED (err u403))
+
+(define-data-var reward-counter uint u0)
+
 (define-data-var update-counter uint u0)
 
 (define-constant ERR_INVALID_CATEGORY (err u200))
@@ -548,4 +555,97 @@
 
 (define-read-only (get-project-update-count (project-id uint))
   (default-to u0 (map-get? project-update-counts project-id))
+)
+
+(define-map project-rewards
+  uint
+  {
+    project-id: uint,
+    tier-name: (string-ascii 50),
+    min-contribution: uint,
+    max-claims: uint,
+    current-claims: uint,
+    description: (string-ascii 200),
+    is-active: bool
+  }
+)
+
+(define-map reward-claims
+  { reward-id: uint, claimer: principal }
+  { claimed-at: uint, contribution-amount: uint }
+)
+
+(define-map project-reward-indices
+  { project-id: uint, index: uint }
+  uint
+)
+
+(define-map project-reward-counts
+  uint
+  uint
+)
+
+(define-public (create-reward-tier
+  (project-id uint)
+  (tier-name (string-ascii 50))
+  (min-contribution uint)
+  (max-claims uint)
+  (description (string-ascii 200)))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (reward-id (+ (var-get reward-counter) u1))
+      (current-count (default-to u0 (map-get? project-reward-counts project-id)))
+    )
+    (asserts! (is-eq tx-sender (get creator project)) ERR_NOT_AUTHORIZED)
+    (map-set project-rewards reward-id
+      {
+        project-id: project-id,
+        tier-name: tier-name,
+        min-contribution: min-contribution,
+        max-claims: max-claims,
+        current-claims: u0,
+        description: description,
+        is-active: true
+      }
+    )
+    (map-set project-reward-indices { project-id: project-id, index: current-count } reward-id)
+    (map-set project-reward-counts project-id (+ current-count u1))
+    (var-set reward-counter reward-id)
+    (ok reward-id)
+  )
+)
+
+(define-public (claim-reward (reward-id uint))
+  (let
+    (
+      (reward (unwrap! (map-get? project-rewards reward-id) ERR_REWARD_NOT_FOUND))
+      (user-funded (default-to u0 (map-get? user-total-funded 
+        { project-id: (get project-id reward), user: tx-sender })))
+      (already-claimed (is-some (map-get? reward-claims { reward-id: reward-id, claimer: tx-sender })))
+    )
+    (asserts! (get is-active reward) ERR_REWARD_NOT_FOUND)
+    (asserts! (>= user-funded (get min-contribution reward)) ERR_INSUFFICIENT_FUNDING_FOR_REWARD)
+    (asserts! (not already-claimed) ERR_REWARD_ALREADY_CLAIMED)
+    (asserts! (< (get current-claims reward) (get max-claims reward)) ERR_REWARD_LIMIT_REACHED)
+    (map-set reward-claims { reward-id: reward-id, claimer: tx-sender }
+      { claimed-at: stacks-block-height, contribution-amount: user-funded }
+    )
+    (map-set project-rewards reward-id
+      (merge reward { current-claims: (+ (get current-claims reward) u1) })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-reward-tier (reward-id uint))
+  (map-get? project-rewards reward-id)
+)
+
+(define-read-only (has-claimed-reward (reward-id uint) (user principal))
+  (is-some (map-get? reward-claims { reward-id: reward-id, claimer: user }))
+)
+
+(define-read-only (get-project-reward-count (project-id uint))
+  (default-to u0 (map-get? project-reward-counts project-id))
 )
