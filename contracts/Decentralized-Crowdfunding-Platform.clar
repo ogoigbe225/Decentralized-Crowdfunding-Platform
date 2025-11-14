@@ -34,6 +34,13 @@
 (define-constant ERR_INSUFFICIENT_FUNDING_FOR_REWARD (err u402))
 (define-constant ERR_REWARD_LIMIT_REACHED (err u403))
 
+(define-constant ERR_PROJECT_PAUSED (err u114))
+(define-constant ERR_INSUFFICIENT_PAUSE_VOTES (err u115))
+(define-constant ERR_PROJECT_NOT_PAUSED (err u116))
+(define-constant ERR_ALREADY_VOTED_PAUSE (err u117))
+
+(define-constant PAUSE_THRESHOLD_PERCENTAGE u51)
+
 (define-data-var reward-counter uint u0)
 
 (define-data-var update-counter uint u0)
@@ -648,4 +655,73 @@
 
 (define-read-only (get-project-reward-count (project-id uint))
   (default-to u0 (map-get? project-reward-counts project-id))
+)
+
+
+(define-map project-pause-state
+  uint
+  { is-paused: bool, pause-votes: uint, total-pause-voters: uint }
+)
+
+(define-map pause-voters
+  { project-id: uint, voter: principal }
+  bool
+)
+
+(define-public (vote-pause-project (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (user-funded (default-to u0 (map-get? user-total-funded { project-id: project-id, user: tx-sender })))
+      (pause-state (default-to { is-paused: false, pause-votes: u0, total-pause-voters: u0 } 
+                     (map-get? project-pause-state project-id)))
+      (already-voted (default-to false (map-get? pause-voters { project-id: project-id, voter: tx-sender })))
+      (total-funders-estimate (if (> (get current-funding project) u0) 
+                                (+ (/ (get current-funding project) u1000000) u1) u1))
+    )
+    (asserts! (> user-funded u0) ERR_NOT_AUTHORIZED)
+    (asserts! (get is-active project) ERR_PROJECT_ENDED)
+    (asserts! (not already-voted) ERR_ALREADY_VOTED_PAUSE)
+    (asserts! (not (get is-paused pause-state)) ERR_PROJECT_PAUSED)
+    (map-set pause-voters { project-id: project-id, voter: tx-sender } true)
+    (let
+      (
+        (new-votes (+ (get pause-votes pause-state) u1))
+        (new-total-voters (+ (get total-pause-voters pause-state) u1))
+        (vote-percentage (/ (* new-votes u100) (if (> total-funders-estimate new-total-voters) 
+                                                   total-funders-estimate new-total-voters)))
+      )
+      (if (>= vote-percentage PAUSE_THRESHOLD_PERCENTAGE)
+        (map-set project-pause-state project-id
+          { is-paused: true, pause-votes: new-votes, total-pause-voters: new-total-voters })
+        (map-set project-pause-state project-id
+          { is-paused: false, pause-votes: new-votes, total-pause-voters: new-total-voters })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (resume-project (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects project-id) ERR_PROJECT_NOT_FOUND))
+      (pause-state (unwrap! (map-get? project-pause-state project-id) ERR_PROJECT_NOT_PAUSED))
+    )
+    (asserts! (is-eq tx-sender (get creator project)) ERR_NOT_AUTHORIZED)
+    (asserts! (get is-paused pause-state) ERR_PROJECT_NOT_PAUSED)
+    (map-set project-pause-state project-id
+      { is-paused: false, pause-votes: u0, total-pause-voters: u0 }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (is-project-paused (project-id uint))
+  (default-to false (get is-paused (map-get? project-pause-state project-id)))
+)
+
+(define-read-only (get-pause-votes (project-id uint))
+  (default-to { is-paused: false, pause-votes: u0, total-pause-voters: u0 } 
+    (map-get? project-pause-state project-id))
 )
